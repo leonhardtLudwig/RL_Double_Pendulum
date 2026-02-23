@@ -96,6 +96,7 @@ T, X, U = sim.simulate_and_animate(
     integrator=integrator,
     save_video=True,
     video_name="acrobot.mp4",
+    scale=0.3
 )
 
 plot_timeseries(

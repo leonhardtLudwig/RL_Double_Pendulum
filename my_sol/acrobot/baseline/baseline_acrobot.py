@@ -17,40 +17,21 @@ from TripleController import TripleController
 
 from double_pendulum.analysis.leaderboard import get_swingup_time
 
-# def condition1(t, x):
-#     return False
 
-# # def condition2(t, x):
-# #     return False
-
-# def condition2(t, x):
-#     angle_error = (x[0] - np.pi + np.pi) % (2*np.pi) - np.pi
-#     vel_norm = np.linalg.norm(x[2:])
-#     return abs(angle_error) < 0.1 and vel_norm < 0.5
 
 def wrap_angle(angle):
     """Mantiene l'angolo nel range [-pi, pi]"""
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 def condition1(t, x):
-    # condition1 decide quando tornare dal controller2 (LQR) al controller1 (Random).
-    # Per una baseline semplice, una volta che l'LQR prende il controllo, 
-    # cerchiamo di non mollarlo più. Se l'Acrobot cade, l'LQR ci riproverà.
     return False
 
 def condition2(t, x):
-    # condition2 decide quando passare dal controller1 (Random) al controller2 (LQR).
-    # Il target è goal = [np.pi, 0.0, 0.0, 0.0]
-    
-    # 1. Calcola l'errore di posizione per entrambi i giunti
     err_q1 = abs(wrap_angle(x[0] - np.pi))
     err_q2 = abs(wrap_angle(x[1]))
     
-    # 2. Calcola la norma delle velocità (quanto si sta muovendo velocemente)
     vel_norm = np.linalg.norm(x[2:])
-    
-    # 3. Definisci le soglie (Bacino di attrazione)
-    # 0.3 rad sono circa 17 gradi. Una velocità di 3.0 rad/s è gestibile.
+
     angle_err = 1
     vel_err = 20 
     is_close = err_q1 < angle_err and err_q2 < angle_err
@@ -59,27 +40,10 @@ def condition2(t, x):
     return is_close and is_slow
 
 
-# def condition_goal(t, x):  # ← CAMBIA QUI: (t, x) come le altre
-  
-#     """
-#     GOAL CONDITION: Active "lock" when equilibria position is reached and velocities are low.
-#     Once is true, it remains active only this controller
-#     """
-#     err_q1 = (x[0] - np.pi + np.pi) % (2*np.pi) - np.pi
-#     err_q2 = (x[1] + np.pi) % (2*np.pi) - np.pi
-    
-#     pos_threshold = 0.3  
-#     vel_threshold = 1 
-    
-#     goal_reached = (abs(err_q1) < pos_threshold and 
-#                     abs(err_q2) < pos_threshold and
-#                     abs(x[2]) < vel_threshold and 
-#                     abs(x[3]) < vel_threshold)
-    
-#     return goal_reached
+
 
 def condition_goal(t, x):
-    """LOCK definitivo: LQR stabilizzatore quando è quasi fermo in cima."""
+    """LOCK """
     err_q1 = wrap_angle(x[0] - np.pi)
     err_q2 = wrap_angle(x[1])
     
@@ -94,9 +58,7 @@ torque_limit = [0.0, 10.0]
 active_act = 1
 
 mpar = model_parameters(filepath=model_par_path)
-# mpar.set_motor_inertia(0.0)
-# mpar.set_damping([0.0, 0.0])
-# mpar.set_cfric([0.0, 0.0])
+
 mpar.set_torque_limit(torque_limit)
 
 dt = 0.001
@@ -125,7 +87,6 @@ controller2.set_parameters(failure_value=0.0,
 
 # Stabilizing controller (robust LQR)
 
-# Opzione 1: LQR con parametri più conservativi
 Q_stable = np.diag([5.0, 5.0, 120.0, 120.0]) 
 R_stable = np.diag([2, 2])*1.5 
 
@@ -134,14 +95,7 @@ controller3.set_goal(goal)
 controller3.set_cost_matrices(Q=Q_stable, R=R_stable)
 controller3.set_parameters(failure_value=0, cost_to_go_cut=20)
 
-# initialize combined controller
-# controller = CombinedController(
-#     controller1=controller1,
-#     controller2=controller2,
-#     condition1=condition1,
-#     condition2=condition2,
-#     compute_both=False
-# )
+
 
 controller = TripleController(
     controller1=controller1,
