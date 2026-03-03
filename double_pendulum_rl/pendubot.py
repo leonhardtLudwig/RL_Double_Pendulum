@@ -66,7 +66,8 @@ T, X, U = sim.simulate_and_animate(
     dt=dt,
     controller=controller,
     integrator=integrator,
-    save_video=False,
+    save_video=True,
+    scale = 0.3,
 )
 
 print('Swingup time: '+str(get_swingup_time(T, np.array(X), mpar=mpar)))
@@ -80,4 +81,5 @@ plot_timeseries(
     X_meas=sim.meas_x_values,
     pos_y_lines=[np.pi],
     tau_y_lines=[-torque_limit[active_act], torque_limit[active_act]],
+    show = False,
 )

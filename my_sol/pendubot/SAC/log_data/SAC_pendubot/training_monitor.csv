@@ -1,0 +1,3 @@
+timestep,episode_return,h_max,h_mean,v_max,goal_reached,ep_length
+500,-1810.405,-0.2142,-0.2959,20.614,0,500
+1000,-512.172,0.4997,-0.0622,21.347,0,500

@@ -1,169 +1,98 @@
 import os
 import numpy as np
-import gymnasium as gym
-import stable_baselines3
-import torch
 from gymnasium import spaces
 from stable_baselines3 import SAC
-from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.sac.policies import MlpPolicy
-from stable_baselines3.common.callbacks import (
-    EvalCallback,
-    StopTrainingOnRewardThreshold,
-)
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.callbacks import EvalCallback
 
-from test_pend import PendulumPlant, pend_dynamics_func, plant_parameters
-
+from double_pendulum.model.symbolic_plant import SymbolicDoublePendulum
+from double_pendulum.model.model_parameters import model_parameters
 from double_pendulum.simulation.simulation import Simulator
-from double_pendulum.simulation.gym_env import CustomEnv
-
-print('----------------------------')
-print(stable_baselines3.version_file)
-print('----------------------------')
-
-def wrap_angles_diff(x):
-    y = np.copy(x)
-    y[0] = x[0] % (2*np.pi)
-    while np.abs(y[0]) > np.pi:
-        y[0] -= 2*np.pi
-    return y
-
-epsilon = 0.2
+from double_pendulum.simulation.gym_env import CustomEnv, double_pendulum_dynamics_func
 
 
-log_dir = "./log_data/SAC_training"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
+# ── parametri modello ──────────────────────────────────────────────────────────
+model_par_path = "pendubot_parameters.yml"
+mpar = model_parameters(filepath=model_par_path)
 
-dt = 0.01
-integrator = "runge_kutta"
-# integrator = "odeint"
-
-robot = 'pendulum'
-
-plant = PendulumPlant(**plant_parameters)
+plant = SymbolicDoublePendulum(model_pars=mpar)
 simulator = Simulator(plant=plant)
 
-# learning environment parameters
-state_representation = 3
-obs_space = spaces.Box(np.array([-1.0]*state_representation), np.array([1.0]*state_representation), dtype=np.float32)
-act_space = spaces.Box(np.array([-1]), np.array([1]), dtype=np.float32)
-max_steps = 10000
-############################################################################
 
-#tuning parameter
-n_envs = 1
-training_steps = int(1e6) # default = 1e6
-log_dir = "./log_data/SAC_training"
-verbose = 1
-# reward_threshold = -0.01
-reward_threshold = 3e7
-eval_freq=10000
-n_eval_episodes=20
-learning_rate=0.0003
-##############################################################################
-# initialize double pendulum dynamics
-dynamics_func = pend_dynamics_func(
-    simulator=simulator,
-    dt=dt,
-    integrator=integrator,
-    robot=robot,
-    state_representation=state_representation,
-    max_velocity=8.0,
-    torque_limit=[plant_parameters['torque_limit']]
+# ── wrapper float32 ────────────────────────────────────────────────────────────
+class DynamicsFuncWrapper:
+    def __init__(self, dynamics_func):
+        self.dynamics_func = dynamics_func
+        self.max_velocity = dynamics_func.max_velocity
+
+    def __call__(self, state, action, scaling=True):
+        obs = self.dynamics_func(state, action, scaling=scaling)
+        return obs.astype(np.float32)
+
+    def normalize_state(self, state):
+        return self.dynamics_func.normalize_state(state).astype(np.float32)
+
+    def unscale_state(self, state):
+        return self.dynamics_func.unscale_state(state)
+
+
+# ── configurazione environment ─────────────────────────────────────────────────
+dt = 0.01
+integrator = "runge_kutta"
+state_representation = 3
+max_velocity = 20.0
+max_steps = 1000
+
+dynamics_func = DynamicsFuncWrapper(
+    double_pendulum_dynamics_func(
+        simulator=simulator,
+        dt=dt,
+        integrator=integrator,
+        robot="pendubot",
+        state_representation=state_representation,
+        max_velocity=max_velocity,
+        torque_limit=mpar.tl,
+        scaling=True,
+    )
 )
 
+obs_space = spaces.Box(np.array([-1.0]*6), np.array([1.0]*6), dtype=np.float32)
+act_space = spaces.Box(np.array([-1.0]),   np.array([1.0]),   dtype=np.float32)
 
+
+# ── reward / terminated / reset ────────────────────────────────────────────────
 def reward_func(observation, action):
-    # quadratic
-    if state_representation == 2:
-        s = np.array(
-            [
-                (observation[0] * np.pi + np.pi) % (2 * np.pi),  # [0, 2pi]
-                observation[1] * dynamics_func.max_velocity,
-            ]
-        )
-    elif state_representation == 3:
-        s = np.array(
-            [
-                np.abs(np.arctan2(observation[0], observation[1])),
-                observation[2] * dynamics_func.max_velocity,
-            ]
-        )
+    th1  = np.arctan2(observation[1], observation[0])
+    th2  = np.arctan2(observation[3], observation[2])
+    dth1 = observation[4] * max_velocity
+    dth2 = observation[5] * max_velocity
 
-    # u = plant_parameters['torque_limit'] * action
+    err1 = np.abs(th1) - np.pi
+    err2 = th2
 
-    goal = [np.pi, 0.]
+    return (
+        - 2.0  * err1**2
+        - 1.0  * err2**2
+        - 0.1  * (dth1**2 + dth2**2)
+        - 0.01 * float(action[0])**2
+    )
 
-    # r = np.einsum("i, ij, j", s - goal, Q, s - goal) #+ np.einsum("i, ij, j", u, R, u)
-    # r = np.clip(np.sqrt(r)/np.pi, 0, 1)
-    r = 0.0
-    if abs(s[0]) > np.pi / 2:
-        r = +1.0
-    if abs(s[0]) < 0.5:
-        r = -1.0
-
-    # r = 1.0 * np.exp(-((np.abs(s[0]) - goal[0]) / np.pi) **2) # attractor to pi
-    # r += -1.0 * (np.exp(-(np.abs(s[0]) / np.pi) **2)) # repellor from 0
-
-
-    # if observation[1] <= 0.5:
-    #     r += 10
-    #
-    # if observation[1] <= 0.0:
-    #     r += 10
-    # # print('----------------')
-    # print(observation)
-    # print(s)
-    # print(r)
-    # print('----------------')
-
-    return r
 
 def terminated_func(observation):
-    if state_representation == 2:
-        s = np.array(
-            [
-                observation[0] * np.pi + np.pi,  # [0, 2pi]
-                observation[1] * 8.0,
-            ]
-        )
-    elif state_representation == 3:
-        s = np.array(
-            [
-                np.arctan2(observation[0], observation[1]),
-                observation[2] * 8.0,
-            ]
-        )
-    else:
-        raise NotImplementedError
-
-    if np.abs(s[0] - np.pi) < epsilon and abs(s[1]) < 1.:
-        return True
-    else:
-        return False
+    return False
 
 
 def noisy_reset_func():
-    if state_representation == 2:
-        rand = np.array(np.random.rand(state_representation) * 0.01, dtype=np.float32)
-        observation = np.array([-1, 0.0], dtype=np.float32) + rand
-    elif state_representation == 3:
-        th = np.random.randn(1) * 0.1
-        observation = np.clip(np.array([np.sin(th), np.cos(th), 0.0+np.random.rand(1)*0.01], dtype=np.float32), -1, 1)
-    return observation.reshape(state_representation,)
+    th1 = np.random.uniform(-0.2, 0.2)
+    th2 = np.random.uniform(-0.2, 0.2)
+    state = np.array([th1, th2, 0.0, 0.0])
+    return dynamics_func.normalize_state(state)
 
-def zero_reset_func():
-    if state_representation == 2:
-        observation = [-1.0, 0.0]
-    else:
-        observation = [0.0, 1.0, 0.0]
-    return observation
 
-# initialize vectorized environment
-env = CustomEnv(
+# ── environment ────────────────────────────────────────────────────────────────
+env_kwargs = dict(
     dynamics_func=dynamics_func,
     reward_func=reward_func,
     terminated_func=terminated_func,
@@ -173,59 +102,43 @@ env = CustomEnv(
     max_episode_steps=max_steps,
 )
 
-# training env
-envs = make_vec_env(
-    env_id=CustomEnv,
-    n_envs=n_envs,
-    env_kwargs={
-        "dynamics_func": dynamics_func,
-        "reward_func": reward_func,
-        "terminated_func": terminated_func,
-        "reset_func": noisy_reset_func,
-        "obs_space": obs_space,
-        "act_space": act_space,
-        "max_episode_steps": max_steps,
-    },
-)
+train_env = make_vec_env(CustomEnv, n_envs=1, env_kwargs=env_kwargs)
 
-# evaluation env
-eval_env = CustomEnv(
-    dynamics_func=dynamics_func,
-    reward_func=reward_func,
-    terminated_func=terminated_func,
-    reset_func=zero_reset_func,
-    obs_space=obs_space,
-    act_space=act_space,
-    max_episode_steps=max_steps,
-)
+eval_env = CustomEnv(**env_kwargs)
+check_env(eval_env)
 
-# training callbacks
-callback_on_best = StopTrainingOnRewardThreshold(
-    reward_threshold=reward_threshold, verbose=verbose
-)
+
+# ── callbacks ──────────────────────────────────────────────────────────────────
+log_dir = "./log_data/SAC_pendubot"
+os.makedirs(log_dir, exist_ok=True)
 
 eval_callback = EvalCallback(
     eval_env,
-    callback_on_new_best=callback_on_best,
-    best_model_save_path=os.path.join(log_dir,
-                                      "best_model"),
+    best_model_save_path=os.path.join(log_dir, "best_model"),
     log_path=log_dir,
-    eval_freq=eval_freq,
-    verbose=verbose,
-    n_eval_episodes=n_eval_episodes,
+    eval_freq=10_000,
+    n_eval_episodes=10,
+    verbose=1,
 )
 
-# train
+
+# ── agente SAC ─────────────────────────────────────────────────────────────────
 agent = SAC(
     MlpPolicy,
-    envs,
-    verbose=verbose,
-    tensorboard_log=os.path.join(log_dir, "tb_logs"),
-    # learning_rate=learning_rate,
+    train_env,
+    policy_kwargs=dict(net_arch=[256, 256], n_critics=2),
+    learning_rate=3e-4,
     gamma=0.99,
-    action_noise=NormalActionNoise(mean=[0.0], sigma=[.1])
+    tau=0.005,
+    buffer_size=1_000_000,
+    batch_size=256,
+    ent_coef="auto",
+    verbose=1,
+    tensorboard_log=os.path.join(log_dir, "tb_logs"),
 )
 
-check_env(env)
-if __name__ == '__main__':
-    agent.learn(total_timesteps=training_steps, callback=eval_callback, progress_bar=False)
+
+# ── training ───────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    agent.learn(total_timesteps=1_000_000, callback=eval_callback, progress_bar=True)
+    agent.save(os.path.join(log_dir, "sac_pendubot_final"))
