@@ -13,10 +13,14 @@ from double_pendulum.model.symbolic_plant import SymbolicDoublePendulum
 from double_pendulum.model.model_parameters import model_parameters
 from double_pendulum.simulation.simulation import Simulator
 from double_pendulum.simulation.gym_env import CustomEnv, double_pendulum_dynamics_func
+from stable_baselines3.common.noise import NormalActionNoise
+
 
 #from RewardConfiguration import reward_func, terminated_func, make_noisy_reset_func
 #from RewardConfiguration_Paper import make_reward_func, make_terminated_func, make_noisy_reset_func
-from RewardConfiguration_V3 import make_reward_func, make_terminated_func, make_noisy_reset_func
+#from RewardConfiguration_V3 import make_reward_func, make_terminated_func, make_noisy_reset_func
+from RewardConfiguration_Hybrid import make_reward_func, make_terminated_func, make_noisy_reset_func
+
 
 from TrainingMonitor import TrainingMonitorCallback
 
@@ -28,58 +32,9 @@ from config import (
     MAX_STEPS, TOTAL_TIMESTEPS, LEARNING_RATE, GAMMA, TAU,
     BATCH_SIZE, ENT_COEF, TARGET_ENTROPY, NET_ARCH, N_CRITICS,
     EVAL_FREQ, N_EVAL_EPISODES, RUN_NAME, LOG_DIR_BASE,
-    ROA_S_PATH, ROA_RHO_PATH, N_ENVS, LEARNING_STARTS
+    ROA_S_PATH, ROA_RHO_PATH, N_ENVS, LEARNING_STARTS,MODEL_PAR_PATH, OBS_DIM, BUFFER_SIZE, EP_SECONDS
 )
 
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PARAMETRI — tocca solo questa sezione
-# ══════════════════════════════════════════════════════════════════════════════
-
-# SEED = 0
-
-# # simulazione
-# DT                  = 0.01
-# INTEGRATOR          = "runge_kutta"
-# ROBOT               = "pendubot"
-# STATE_REPR          = 3          # 2 = angoli diretti (4D), 3 = cos/sin (6D)
-# MAX_VELOCITY        = 20.0       # [rad/s] — usato per normalizzazione
-
-# # episodio
-# MAX_STEPS           = 500       # steps per episodio (secondi = MAX_STEPS * DT)
-
-# # training
-# TOTAL_TIMESTEPS     = 100_000
-# N_ENVS              = 1
-# LEARNING_STARTS     = 1_000       # inizia ad aggiornare prima
-
-# # SAC
-# LEARNING_RATE       = 3e-4
-# GAMMA               = 0.99
-# TAU                 = 0.005
-# BATCH_SIZE          = 256
-# ENT_COEF            = "auto_0.1"
-# ENT_TARGET          = -0.5
-# NET_ARCH            = [256, 256]
-# N_CRITICS           = 2
-
-# # evaluation callback
-# EVAL_FREQ           = 10_000     # ogni quanti steps valutare
-# N_EVAL_EPISODES     = 10
-# #notturno 
-# # EVAL_FREQ       = 50_000    # ogni 50k steps — non ogni 10k su run lungo
-# # N_EVAL_EPISODES = 20        # più episodi = stima più stabile
-
-
-# # logging
-# RUN_NAME            = "v1_cos_reward_random_reset"
-#LOG_DIR             = os.path.join("./log_data/SAC_pendubot", RUN_NAME)
-
-model_par_path = "pendubot_parameters.yml"
-
-
-# roa
 
 ROA_S_PATH   = os.path.join("./", "roa_S.npy")
 ROA_RHO_PATH = os.path.join("./", "roa_rho.npy")
@@ -91,29 +46,18 @@ if os.path.exists(ROA_S_PATH) and os.path.exists(ROA_RHO_PATH):
 else:
     print("Calcolo RoA...")
     S_lqr, rho = compute_and_save_roa(
-        model_par_path=model_par_path,
+        model_par_path=MODEL_PAR_PATH,
         save_S_path=ROA_S_PATH,
         save_rho_path=ROA_RHO_PATH,
         verbose=True,
     )
 
-#ELIMINARE, SOLO PER CONTROLLO
-#rho = 1.5
-
-S_lqr = None
-rho = None
-
-# print(f"RoA: rho = {rho:.4f}")
-# print("S_lqr:")
-# print(S_lqr)
-
 
 
 # ── parametri derivati (calcolati automaticamente) ─────────────────────────────
-OBS_DIM         = 6 if STATE_REPR == 3 else 4
-BUFFER_SIZE     = max(TOTAL_TIMESTEPS, 100_000)   # almeno 100k, scala col training
-#BUFFER_SIZE = 500_000
-EP_SECONDS      = MAX_STEPS * DT                  # durata episodio in secondi
+# OBS_DIM         = 6 if STATE_REPR == 3 else 4
+# BUFFER_SIZE     = max(TOTAL_TIMESTEPS, 100_000)   # almeno 100k, scala col training
+# EP_SECONDS      = MAX_STEPS * DT                  # durata episodio in secondi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SEED — fisso ovunque
@@ -127,7 +71,7 @@ torch.manual_seed(SEED)
 # MODELLO
 # ══════════════════════════════════════════════════════════════════════════════
 
-mpar = model_parameters(filepath=model_par_path)
+mpar = model_parameters(filepath=MODEL_PAR_PATH)
 plant = SymbolicDoublePendulum(model_pars=mpar)
 simulator = Simulator(plant=plant)
 
@@ -172,68 +116,11 @@ act_space = spaces.Box(np.array([-1.0]),          np.array([1.0]),          dtyp
 # REWARD / TERMINATED / RESET
 # ══════════════════════════════════════════════════════════════════════════════
 
-# def reward_func(observation, action):
-#     cos_th1 = observation[0]
-#     cos_th2 = observation[2]
-#     dth1 = observation[4] * MAX_VELOCITY
-#     dth2 = observation[5] * MAX_VELOCITY
 
-#     r = (
-#         + (cos_th1 - 1.0)
-#         - 0.3  * (cos_th2 - 1.0)**2
-#         - 0.2  * (dth1**2 + dth2**2) / MAX_VELOCITY**2
-#         - 0.05 * float(action[0])**2
-#     )
+### HYBRID
 
-#     # bonus goal: vicino a π con basse velocità
-#     if cos_th1 < -0.95 and abs(dth1) < 1.0 and abs(dth2) < 1.0:
-#         r += 20.0
-
-#     return float(r)
-
-
-# def terminated_func(observation):
-#     cos_th1 = observation[0]
-#     dth1 = observation[4] * MAX_VELOCITY
-#     dth2 = observation[5] * MAX_VELOCITY
-#     near_goal = cos_th1 < -0.95
-#     slow = abs(dth1) < 1.0 and abs(dth2) < 1.0
-#     return bool(near_goal and slow)
-
-
-# def noisy_reset_func():
-#     # reset casuale su tutto lo spazio degli stati
-#     th1  = np.random.uniform(-np.pi, np.pi)
-#     th2  = np.random.uniform(-np.pi, np.pi)
-#     dth1 = np.random.uniform(-1.0, 1.0)
-#     dth2 = np.random.uniform(-1.0, 1.0)
-#     state = np.array([th1, th2, dth1, dth2])
-#     return dynamics_func.normalize_state(state)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ENVIRONMENT
-# ══════════════════════════════════════════════════════════════════════════════
-
-###PAPER
-
-# reward_func     = make_reward_func(S_lqr=S_lqr, rho=rho)
-# terminated_func = make_terminated_func(S_lqr=S_lqr, rho=rho)
-# terminated_func_eval = make_terminated_func(S_lqr=S_lqr, rho=rho)
-
-# noisy_reset_func = make_noisy_reset_func(dynamics_func, terminated_func)
-# def eval_reset_func():
-#     terminated_func_eval.reset()
-#     p1 = np.random.uniform(-0.1, 0.1)
-#     p2 = np.random.uniform(-0.1, 0.1)
-#     state = np.array([p1, p2, 0.0, 0.0])
-#     return dynamics_func.normalize_state(state)
-
-### V3
-
-
-reward_func          = make_reward_func()
-terminated_func      = make_terminated_func()
+reward_func     = make_reward_func()
+terminated_func = make_terminated_func()
 terminated_func_eval = make_terminated_func()
 
 noisy_reset_func     = make_noisy_reset_func(dynamics_func)
@@ -244,25 +131,6 @@ def eval_reset_func():
     p2 = np.random.uniform(-0.1, 0.1)
     v1, v2 = 0.0, 0.0
     return dynamics_func.normalize_state(np.array([p1, p2, v1, v2]))
-
-
-#noisy_reset_func = make_noisy_reset_func(dynamics_func)
-# _base_reset_func = make_noisy_reset_func(dynamics_func)
-
-# def noisy_reset_func():
-#     """Resetta il contatore N_HOLD ad ogni nuovo episodio."""
-#     terminated_func.reset()
-#     return _base_reset_func()
-
-# def eval_reset_func():
-#     p1 = 0.0 + np.random.uniform(-0.1, 0.1)   # parte dal basso
-#     p2 = 0.0 + np.random.uniform(-0.1, 0.1)
-#     v1 = 0.0
-#     v2 = 0.0
-#     state = np.array([p1, p2, v1, v2])
-#     return dynamics_func.normalize_state(state)
-
-
 
 
 env_kwargs = dict(
@@ -323,6 +191,23 @@ eval_callback = EvalCallback(
 
 # fisso target entropia
 
+# agent = SAC(
+#     MlpPolicy,
+#     train_env,
+#     policy_kwargs=dict(net_arch=NET_ARCH, n_critics=N_CRITICS),
+#     learning_rate=LEARNING_RATE,
+#     learning_starts= LEARNING_STARTS,
+#     gamma=GAMMA,
+#     tau=TAU,
+#     buffer_size=BUFFER_SIZE,
+#     batch_size=BATCH_SIZE,
+#     ent_coef=ENT_COEF,
+#     target_entropy = TARGET_ENTROPY,
+#     seed=SEED,
+#     verbose=1,
+#     tensorboard_log=os.path.join(LOG_DIR, "tb_logs"),
+# )
+
 agent = SAC(
     MlpPolicy,
     train_env,
@@ -333,12 +218,13 @@ agent = SAC(
     tau=TAU,
     buffer_size=BUFFER_SIZE,
     batch_size=BATCH_SIZE,
-    ent_coef=ENT_COEF,
-    target_entropy = TARGET_ENTROPY,
     seed=SEED,
     verbose=1,
+    ent_coef = 0.1,
     tensorboard_log=os.path.join(LOG_DIR, "tb_logs"),
-)
+    action_noise=NormalActionNoise(mean=[0.0], sigma=[0.1]), # Noise is added for exploration
+    )   
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TRAINING

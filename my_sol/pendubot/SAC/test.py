@@ -14,6 +14,9 @@ from stable_baselines3 import SAC
 # sostituisci i valori hardcoded con quelli da config
 from config import RUN_NAME, DT, INTEGRATOR, STATE_REPR, MAX_VELOCITY, LOG_DIR_BASE
 
+from HybridController import HybridController
+from ComputeRoa import compute_and_save_roa
+
 # poi usa
 model_path = os.path.join(LOG_DIR_BASE, RUN_NAME, "best_model", "best_model")
 dt         = DT
@@ -50,7 +53,7 @@ class DynamicsFuncWrapper:
 
 
 # ── dynamics func ──────────────────────────────────────────────────────────────
-dt = 0.01
+#dt = 0.01
 integrator = "runge_kutta"
 state_representation = 3
 max_velocity = 20.0
@@ -89,12 +92,54 @@ class FixedSACController(SACController):
 
 
 # ── istanza controller ─────────────────────────────────────────────────────────
-controller = FixedSACController(
-    model_path="./log_data/SAC_pendubot/" + RUN_NAME + "/best_model/best_model",
-    dynamics_func=dynamics_func,
-    dt=dt,
+# controller = FixedSACController(
+#     model_path="./log_data/SAC_pendubot/" + RUN_NAME + "/best_model/best_model",
+#     dynamics_func=dynamics_func,
+#     dt=dt,
+# )
+# controller.init()
+
+#S_lqr, rho = compute_and_save_roa(model_par_path=model_par_path, verbose=False)
+# ROA_S_PATH   = os.path.join("./", "roa_S.npy")
+# ROA_RHO_PATH = os.path.join("./", "roa_rho.npy")
+
+# if os.path.exists(ROA_S_PATH) and os.path.exists(ROA_RHO_PATH):
+#     print("RoA già calcolata, carico da file...")
+#     S_lqr = np.load(ROA_S_PATH)
+#     rho   = float(np.load(ROA_RHO_PATH)[0])
+# else:
+#     print("Calcolo RoA...")
+#     S_lqr, rho = compute_and_save_roa(
+#         model_par_path=model_par_path,
+#         save_S_path=ROA_S_PATH,
+#         save_rho_path=ROA_RHO_PATH,
+#         verbose=True,
+#     )
+
+# Q_lqr_online = np.diag([1.92, 1.92, 0.3, 0.3])
+# R_lqr_online = np.diag([0.82, 0.82])
+# S_online = np.array([
+#     [7.857934201124567153e01, 5.653751913776947191e01, 1.789996146741196981e01, 8.073612858295813766e00],
+#     [5.653751913776947191e01, 4.362786774581156379e01, 1.306971194928728330e01, 6.041705515910111401e00],
+#     [1.789996146741196981e01, 1.306971194928728330e01, 4.125964000971944046e00, 1.864116086667296113e00],
+#     [8.073612858295813766e00, 6.041705515910111401e00, 1.864116086667296113e00, 8.609202333737846491e-01]
+# ])
+# rho_online = 8.690673829091186575e-01  # 1.690673829091186575e-01
+
+# controller = HybridController(
+#     sac_model_path="./log_data/SAC_pendubot/" + RUN_NAME + "/best_model/best_model",
+#     dynamics_func=dynamics_func,
+#     S_lqr=S_online, rho=rho_online,
+#     model_par_path=model_par_path,
+#     dt=dt)
+# controller.init()
+
+SAC_controller = FixedSACController(
+     model_path="./log_data/SAC_pendubot/" + RUN_NAME + "/best_model/best_model",
+     dynamics_func=dynamics_func,
+     dt=dt,
 )
-controller.init()
+SAC_controller.init()
 
 
 # ── simulazione ────────────────────────────────────────────────────────────────
@@ -103,7 +148,7 @@ T, X, U = simulator.simulate_and_animate(
     x0=[0.0, 0.0, 0.0, 0.0],
     tf=10.0,
     dt=dt,
-    controller=controller,
+    controller=SAC_controller,
     integrator=integrator,
     save_video=True,
     video_name="sac_pendubot.mp4",

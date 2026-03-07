@@ -10,7 +10,7 @@ from config import (
     GOAL_POS_THRESHOLD, GOAL_VEL_THRESHOLD,
     ROA_N_SAMPLES, ROA_MAXITER, ROA_T_SIM,
     ROA_SUCCESS_RATIO, ROA_RHO_MAX, ROA_S_PATH, ROA_RHO_PATH,
-    DT, INTEGRATOR,
+    DT, INTEGRATOR, ROA_RHO_MIN,
 )
 
 
@@ -52,7 +52,7 @@ def estimate_roa(
     plant,
     S,
     goal=GOAL,
-    rho_min=1e-6,
+    rho_min=ROA_RHO_MIN,
     rho_max=ROA_RHO_MAX,
     n_samples=ROA_N_SAMPLES,
     maxiter=ROA_MAXITER,
@@ -114,6 +114,9 @@ def compute_and_save_roa(
     controller.set_goal(GOAL)
     controller.set_cost_matrices(Q=Q_LQR, R=R_LQR_MAT)
     controller.set_parameters(failure_value=0.0, cost_to_go_cut=1000.0)
+    # in ComputeRoa.py, prima di controller.init()
+    print(f"torque_limit: {mpar.tl}")
+
     controller.init()
 
     S = np.asarray(controller.S)
@@ -141,3 +144,74 @@ def compute_and_save_roa(
 
 if __name__ == "__main__":
     compute_and_save_roa(verbose=True)
+
+
+# import numpy as np
+# from double_pendulum.model.model_parameters import model_parameters
+# from double_pendulum.controller.lqr.lqr_controller import LQRController
+
+# # importa direttamente dal file che hai incollato
+# from double_pendulum.controller.lqr.roa.roa_estimation import (
+#     bisect_and_verify,
+#     SosDoublePendulumDynamics,
+#     verify_double_pendulum_rho,
+# )
+
+
+# from config import (
+#     MODEL_PAR_PATH, GOAL, Q_LQR, R_LQR_MAT,
+#     ROA_S_PATH, ROA_RHO_PATH
+# )
+
+# # ── LQR → S e K ──────────────────────────────────────────────────
+# mpar = model_parameters(filepath=MODEL_PAR_PATH)
+
+# controller = LQRController(model_pars=mpar)
+# controller.set_goal(GOAL)
+# controller.set_cost_matrices(Q=Q_LQR, R=R_LQR_MAT)
+# controller.set_parameters(failure_value=0.0, cost_to_go_cut=1000.0)
+# controller.init()
+
+# S = np.asarray(controller.S)
+# K = np.asarray(controller.K)
+
+# print(f"S:\n{np.round(S, 3)}")
+# print(f"K:\n{np.round(K, 3)}")
+
+# # ── parametri fisici nel formato atteso da SosDoublePendulumDynamics ─
+# params = {
+#     "I":       list(mpar.I),
+#     "m":       list(mpar.m),
+#     "l":       list(mpar.l),
+#     "lc":      list(mpar.r),
+#     "b":       list(mpar.b),
+#     "fc":      list(mpar.cf),
+#     "g":       mpar.g,
+#     "tau_max": list(mpar.tl),
+# }
+
+# hyper_params = {
+#     "taylor_deg": 3,
+#     "lambda_deg": 4,
+#     "mode": 0,
+# }
+
+# # ── bisection SOS ─────────────────────────────────────────────────
+# rho = bisect_and_verify(
+#     params=params,
+#     S=S,
+#     K=K,
+#     robot="pendubot",
+#     hyper_params=hyper_params,
+#     rho_min=1e-3,
+#     rho_max=5.0,
+#     maxiter=20,
+#     verbose=True,
+# )
+
+# print(f"\n>>> rho SOS = {rho:.6f}")
+
+# # ── salva ─────────────────────────────────────────────────────────
+# np.save(ROA_S_PATH, S)
+# np.save(ROA_RHO_PATH, np.array([rho]))
+# print(f"Salvati: {ROA_S_PATH}, {ROA_RHO_PATH}")
